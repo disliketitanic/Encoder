@@ -14,7 +14,7 @@
 
 // PARALLEL/SERIAL CONTROL:
 // Pico GP3 -> CD40109 -> CD4021
-#define PIN_PAR_SER 3
+#define PIN_PARALLEL_SERIAL_CONTROL 3
 
 // DATA:
 // CD4021 -> 39 kOhm / 13 kOhm divider -> Pico GP4
@@ -27,25 +27,55 @@
 
 // Time between two measurements.
 // 10 ms gives approximately 100 measurements per second.
-#define SAMPLE_PERIOD_MS 10
+#define MEASUREMENT_PERIOD_MS 10
 
 
 // ============================================================
-// Generate one clock pulse for CD4021
+// Encoder settings
+// ============================================================
+
+// Number of encoder positions during one full revolution.
+#define ENCODER_COUNTS_PER_REVOLUTION 1024
+
+// Linear distance corresponding to one full revolution.
+//
+// Temporary value.
+// Replace this value later with the experimentally measured
+// distance traveled during one complete revolution.
+#define METERS_PER_REVOLUTION 1.000f
+
+
+// ============================================================
+// Wrap detection settings
+// ============================================================
+
+// Thresholds used to detect crossing of the
+// 0 / 1023 encoder boundary.
+//
+// Forward:
+//
+//     1023 -> 0
+//
+// Backward:
+//
+//     0 -> 1023
+//
+#define ENCODER_WRAP_HIGH_THRESHOLD 900
+#define ENCODER_WRAP_LOW_THRESHOLD  100
+
+
+// ============================================================
+// Generate one clock pulse
 // ============================================================
 
 void clock_pulse(void)
 {
     // Set CLOCK high
     gpio_put(PIN_CLOCK, 1);
-
-    // Keep CLOCK high for 10 microseconds
     sleep_us(10);
 
     // Set CLOCK low
     gpio_put(PIN_CLOCK, 0);
-
-    // Keep CLOCK low for 10 microseconds
     sleep_us(10);
 }
 
@@ -57,34 +87,25 @@ void clock_pulse(void)
 void parallel_load(void)
 {
     // PARALLEL/SERIAL CONTROL = 1
-    //
-    // According to the CD4021B datasheet:
-    // 1 = parallel load
-    // 0 = serial shift
-    gpio_put(PIN_PAR_SER, 1);
+    // Parallel load mode.
+    gpio_put(PIN_PARALLEL_SERIAL_CONTROL, 1);
 
-    // Small delay before the clock pulse
     sleep_us(10);
 
-    // Transfer the parallel encoder inputs into the
-    // internal shift register of the CD4021 chain.
     clock_pulse();
 }
 
 
 // ============================================================
-// Switch CD4021 to serial shift mode
+// Switch CD4021 to serial mode
 // ============================================================
 
 void serial_mode(void)
 {
     // PARALLEL/SERIAL CONTROL = 0
-    //
-    // After this the data can be shifted out
-    // bit by bit using the CLOCK signal.
-    gpio_put(PIN_PAR_SER, 0);
+    // Serial shift mode.
+    gpio_put(PIN_PARALLEL_SERIAL_CONTROL, 0);
 
-    // Small delay after changing the control signal
     sleep_us(10);
 }
 
@@ -95,115 +116,66 @@ void serial_mode(void)
 
 uint8_t read_data_bit(void)
 {
-    // Read the current logic level on Pico GP4.
-    //
-    // GP4 receives the CD4021 output through
-    // the 39 kOhm / 13 kOhm voltage divider.
     return gpio_get(PIN_DATA);
 }
 
 
 // ============================================================
-// Read the complete 16-bit CD4021 shift chain
+// Read complete 16-bit CD4021 chain
 // ============================================================
 
 uint16_t read_shift_frame(void)
 {
-    // Variable that will contain all 16 received bits.
-    uint16_t frame = 0;
+    uint16_t EncoderShiftRegisterFrame = 0;
 
-
-    // The system contains two 8-bit CD4021 registers:
-    //
-    // U1 = 8 bits
-    // U2 = 8 bits
-    //
-    // Total:
-    // 8 + 8 = 16 bits
     for (int i = 0; i < 16; i++)
     {
-        // Read the current bit before generating
-        // the next clock pulse.
-        uint8_t bit = read_data_bit();
+        uint8_t ShiftRegisterBit = read_data_bit();
 
+        EncoderShiftRegisterFrame =
+            (EncoderShiftRegisterFrame << 1) | ShiftRegisterBit;
 
-        // Shift the previously received bits one position left
-        // and append the new bit at bit 0.
-        //
-        // Example:
-        //
-        // frame = 1010
-        // bit   = 1
-        //
-        // result = 10101
-        frame = (frame << 1) | bit;
-
-
-        // Move the CD4021 shift registers to the next bit.
         clock_pulse();
     }
 
-
-    // Return the complete 16-bit frame.
-    return frame;
+    return EncoderShiftRegisterFrame;
 }
 
 
 // ============================================================
-// Main program
+// Main
 // ============================================================
 
 int main(void)
 {
-    // Initialize the standard I/O system.
-    //
-    // In our project this is used for sending text
-    // from Pico to the computer through USB.
+    // Initialize USB Serial
     stdio_init_all();
 
 
     // ========================================================
-    // CLOCK GPIO
+    // CLOCK
     // ========================================================
 
-    // Initialize GP2
     gpio_init(PIN_CLOCK);
-
-    // GP2 is an output
     gpio_set_dir(PIN_CLOCK, GPIO_OUT);
-
-    // Initial CLOCK state = LOW
     gpio_put(PIN_CLOCK, 0);
 
 
     // ========================================================
-    // PARALLEL/SERIAL CONTROL GPIO
+    // PARALLEL/SERIAL CONTROL
     // ========================================================
 
-    // Initialize GP3
-    gpio_init(PIN_PAR_SER);
-
-    // GP3 is an output
-    gpio_set_dir(PIN_PAR_SER, GPIO_OUT);
-
-    // Initial state = parallel mode
-    gpio_put(PIN_PAR_SER, 1);
+    gpio_init(PIN_PARALLEL_SERIAL_CONTROL);
+    gpio_set_dir(PIN_PARALLEL_SERIAL_CONTROL, GPIO_OUT);
+    gpio_put(PIN_PARALLEL_SERIAL_CONTROL, 1);
 
 
     // ========================================================
-    // DATA GPIO
+    // DATA
     // ========================================================
 
-    // Initialize GP4
     gpio_init(PIN_DATA);
-
-    // GP4 is an input
     gpio_set_dir(PIN_DATA, GPIO_IN);
-
-    // Disable Pico internal pull-up/pull-down resistors.
-    //
-    // The DATA signal already has an external voltage divider
-    // connected to the CD4021 output.
     gpio_disable_pulls(PIN_DATA);
 
 
@@ -211,9 +183,59 @@ int main(void)
     // Startup delay
     // ========================================================
 
-    // Give the system some time to initialize
-    // before starting the measurement loop.
     sleep_ms(2000);
+
+
+    // ========================================================
+    // Initial encoder position
+    // ========================================================
+
+    // Read the current physical position of the encoder.
+    parallel_load();
+    serial_mode();
+
+    uint16_t EncoderShiftRegisterFrame = read_shift_frame();
+
+    uint16_t AbsoluteEncoderPosition =
+        EncoderShiftRegisterFrame & 0x03FF;
+
+
+    // --------------------------------------------------------
+    // The current physical encoder position is treated
+    // as the starting zero position.
+    // --------------------------------------------------------
+
+    uint16_t InitialAbsoluteEncoderPosition =
+        AbsoluteEncoderPosition;
+
+    int32_t RevolutionCount = 0;
+
+    int64_t TotalEncoderPosition = 0;
+
+    float LinearDistanceMeters = 0.0f;
+
+
+    // --------------------------------------------------------
+    // Previous encoder position is required to detect
+    // crossing of the 0 / 1023 boundary.
+    // --------------------------------------------------------
+
+    uint16_t PreviousAbsoluteEncoderPosition =
+        AbsoluteEncoderPosition;
+
+
+    // ========================================================
+    // Startup message
+    // ========================================================
+
+    printf("\r\n");
+    printf("Encoder reader started.\r\n");
+    printf(
+        "Initial AbsoluteEncoderPosition = %u\r\n",
+        InitialAbsoluteEncoderPosition
+    );
+    printf("Initial position = 0\r\n");
+    printf("\r\n");
 
 
     // ========================================================
@@ -224,70 +246,136 @@ int main(void)
     {
         // ----------------------------------------------------
         // Step 1:
-        // Load the current 10-bit encoder position
-        // into the two CD4021 registers.
+        // Load current encoder position into CD4021.
         // ----------------------------------------------------
 
         parallel_load();
 
-
-        // ----------------------------------------------------
-        // Step 2:
-        // Switch the CD4021 chain to serial mode.
-        // ----------------------------------------------------
-
+        // Switch to serial shift mode.
         serial_mode();
 
 
         // ----------------------------------------------------
-        // Step 3:
-        // Read all 16 bits from the two CD4021 registers.
+        // Step 2:
+        // Read complete 16-bit shift register chain.
         // ----------------------------------------------------
 
-        uint16_t frame = read_shift_frame();
+        EncoderShiftRegisterFrame =
+            read_shift_frame();
+
+
+        // ----------------------------------------------------
+        // Step 3:
+        // Extract the 10 encoder bits.
+        // ----------------------------------------------------
+
+        AbsoluteEncoderPosition =
+            EncoderShiftRegisterFrame & 0x03FF;
 
 
         // ----------------------------------------------------
         // Step 4:
-        // Extract the 10 bits used by the encoder.
+        // Detect a complete revolution.
+        // ----------------------------------------------------
         //
-        // 0x03FF in binary:
+        // Forward:
         //
-        // 0000001111111111
+        //     1023 -> 0
         //
-        // Therefore only the lowest 10 bits remain.
+        // means one clockwise revolution.
+        //
+        // Backward:
+        //
+        //     0 -> 1023
+        //
+        // means one counter-clockwise revolution.
         // ----------------------------------------------------
 
-        uint16_t raw = frame & 0x03FF;
+        if (PreviousAbsoluteEncoderPosition >=
+                ENCODER_WRAP_HIGH_THRESHOLD &&
+            AbsoluteEncoderPosition <=
+                ENCODER_WRAP_LOW_THRESHOLD)
+        {
+            // Crossed 1023 -> 0.
+            // Clockwise movement.
+            RevolutionCount++;
+        }
+        else if (PreviousAbsoluteEncoderPosition <=
+                     ENCODER_WRAP_LOW_THRESHOLD &&
+                 AbsoluteEncoderPosition >=
+                     ENCODER_WRAP_HIGH_THRESHOLD)
+        {
+            // Crossed 0 -> 1023.
+            // Counter-clockwise movement.
+            RevolutionCount--;
+        }
 
 
         // ----------------------------------------------------
         // Step 5:
-        // Print the received data to the Serial Monitor.
+        // Calculate total encoder displacement.
         //
-        // FRAME:
-        // complete 16-bit frame in hexadecimal format.
+        // Formula:
         //
-        // RAW:
-        // 10-bit encoder value in decimal format.
+        // TotalEncoderPosition =
+        //     RevolutionCount * 1024
+        //     + AbsoluteEncoderPosition
+        //     - InitialAbsoluteEncoderPosition
         // ----------------------------------------------------
 
-        printf(
-            "FRAME = 0x%04X    RAW = %u\r\n",
-            frame,
-            raw
-        );
+        TotalEncoderPosition =
+            (int64_t)RevolutionCount *
+                ENCODER_COUNTS_PER_REVOLUTION
+            + AbsoluteEncoderPosition
+            - InitialAbsoluteEncoderPosition;
 
 
         // ----------------------------------------------------
         // Step 6:
-        // Wait before the next measurement.
+        // Convert encoder displacement to meters.
         //
-        // SAMPLE_PERIOD_MS = 10 ms
-        // approximately 100 measurements per second.
+        // Formula:
+        //
+        // LinearDistanceMeters =
+        //     TotalEncoderPosition
+        //     * METERS_PER_REVOLUTION
+        //     / 1024
         // ----------------------------------------------------
 
-        sleep_ms(SAMPLE_PERIOD_MS);
+        LinearDistanceMeters =
+            ((float)TotalEncoderPosition *
+             METERS_PER_REVOLUTION)
+            / ENCODER_COUNTS_PER_REVOLUTION;
+
+
+        // ----------------------------------------------------
+        // Step 7:
+        // Output current state.
+        // ----------------------------------------------------
+
+        printf(
+            "AbsoluteEncoderPosition = %u    "
+            "TotalEncoderPosition = %lld    "
+            "RevolutionCount = %ld    "
+            "LinearDistanceMeters = %.3f m\r\n",
+            AbsoluteEncoderPosition,
+            (long long)TotalEncoderPosition,
+            (long)RevolutionCount,
+            LinearDistanceMeters
+        );
+
+
+        // ----------------------------------------------------
+        // Step 8:
+        // Save current position for the next iteration.
+        // ----------------------------------------------------
+
+        PreviousAbsoluteEncoderPosition =
+            AbsoluteEncoderPosition;
+
+
+        // Wait before the next measurement.
+        sleep_ms(MEASUREMENT_PERIOD_MS);
     }
 
 
